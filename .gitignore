@@ -1,0 +1,22 @@
+# 忽略原始CI配置文件
+.github/workflows/ci-original.yml
+
+# 常见的临时文件和编辑器文件
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# IDE配置
+.vscode/
+.idea/
+*.iml
+
+# 构建输出
+output/
+build/
+dist/
+*.img
+*.xz
+*.deb

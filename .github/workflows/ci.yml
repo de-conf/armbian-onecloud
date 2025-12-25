@@ -16,6 +16,9 @@ on:
 env:
   SCRIPT_REPO: ${{ github.repository }}     # 当前仓库
   SCRIPT_REF: ${{ github.ref_name }}        # 当前分支/标签
+  UBOOT_REPO: de-conf/u-boot-onecloud        # U-Boot仓库
+  UBOOT_RELEASE: latest                     # U-Boot发布版本
+  UBOOT_BURNIMG: eMMC.burn.img              # U-Boot烧录镜像文件名
   ARMBIAN_REPO: armbian/build               # Armbian构建仓库
   ARMBIAN_REF: main                         # Armbian仓库分支
   PATCHES: 4077,5076                        # 需要应用的补丁PR编号
@@ -47,6 +50,8 @@ jobs:
 
           # 获取当前脚本仓库的commit SHA
           SCRIPT_SHA=$(curl https://api.github.com/repos/${SCRIPT_REPO}/commits/${SCRIPT_REF} | jq -r .sha)
+          # 获取U-Boot仓库的release标签
+          UBOOT_TAG=$(curl https://api.github.com/repos/${UBOOT_REPO}/releases/${UBOOT_RELEASE} | jq -r .tag_name)
           # 获取Armbian仓库的commit SHA
           ARMBIAN_SHA=$(curl https://api.github.com/repos/${ARMBIAN_REPO}/commits/${ARMBIAN_REF} | jq -r .sha)
 
@@ -54,6 +59,7 @@ jobs:
             TIME=$TIME
             TAG=$TAG
             SCRIPT_SHA=$SCRIPT_SHA
+            UBOOT_TAG=$UBOOT_TAG
             ARMBIAN_SHA=$ARMBIAN_SHA
           EOF
           echo "env=$(cat $GITHUB_ENV | base64 -w 0)" >>$GITHUB_OUTPUT
@@ -73,6 +79,8 @@ jobs:
 
           echo -e "$(cat <<EOF | sed -E 's/^  //'
             TIME: ${C_GREEN}$(date -d "$TIME" +'%Y-%m-%d %H:%M:%S %Z(%:z)')${C_RESET}
+            U-Boot: ${C_BLUE}${UBOOT_REPO}${C_RESET}@${C_MAGENTA}${UBOOT_RELEASE}${C_RESET}(https://github.com/${UBOOT_REPO}/releases/tag/${UBOOT_RELEASE})
+                    ${C_MAGENTA}${UBOOT_TAG}${C_RESET}(https://github.com/${UBOOT_REPO}/releases/tag/${UBOOT_TAG})
             Armbian: ${C_BLUE}${ARMBIAN_REPO}${C_RESET}@${C_MAGENTA}${ARMBIAN_REF}${C_RESET}(https://github.com/${ARMBIAN_REPO}/tree/${ARMBIAN_REF})
                      ${C_YELLOW}${ARMBIAN_SHA}${C_RESET}(https://github.com/${ARMBIAN_REPO}/tree/${ARMBIAN_SHA})
           EOF
@@ -89,6 +97,7 @@ jobs:
             # $(date -d "$TIME" +'%Y-%m-%d %H:%M:%S %Z(%:z)')
 
             ## Sources
+            U-Boot: [${UBOOT_REPO}@${UBOOT_RELEASE}](https://github.com/${UBOOT_REPO}/releases/tag/${UBOOT_RELEASE}) ([\`${UBOOT_TAG}\`](https://github.com/${UBOOT_REPO}/releases/tag/${UBOOT_TAG}))
             Armbian: [${ARMBIAN_REPO}@${ARMBIAN_REF}](https://github.com/${ARMBIAN_REPO}/tree/${ARMBIAN_REF}) ([\`${ARMBIAN_SHA}\`](https://github.com/${ARMBIAN_REPO}/tree/${ARMBIAN_SHA}))
 
             ${PATCHES:+$(
@@ -104,6 +113,7 @@ jobs:
             CI $(date -d "$TIME" +'%Y-%m-%d %H:%M:%S %Z(%:z)')
 
             # Sources
+            U-Boot: [${UBOOT_REPO}@${UBOOT_RELEASE}](https://github.com/${UBOOT_REPO}/releases/tag/${UBOOT_RELEASE}) ([\`${UBOOT_TAG}\`](https://github.com/${UBOOT_REPO}/releases/tag/${UBOOT_TAG}))
             Armbian: [${ARMBIAN_REPO}@${ARMBIAN_REF}](https://github.com/${ARMBIAN_REPO}/tree/${ARMBIAN_REF}) ([\`${ARMBIAN_SHA}\`](https://github.com/${ARMBIAN_REPO}/tree/${ARMBIAN_SHA}))
 
             ${PATCHES:+$(
@@ -302,12 +312,20 @@ jobs:
           curl -L -o ./AmlImg https://github.com/hzyitc/AmlImg/releases/download/$ver/AmlImg_${ver}_linux_amd64
           chmod +x ./AmlImg
 
-      # 步骤7：提取boot和rootfs分区
+      # 步骤7：下载并解包U-Boot
+      - name: Download and unpack the latest u-boot
+        run: |
+          echo "::group::Download"
+          curl -L -o ./uboot.img https://github.com/${UBOOT_REPO}/releases/download/${UBOOT_TAG}/${UBOOT_BURNIMG}
+          echo "::endgroup::"
+
+          echo "::group::Unpack"
+          ./AmlImg unpack ./uboot.img burn/
+          echo "::endgroup::"
+
+      # 步骤8：提取boot和rootfs分区
       - name: Extract boot and rootfs partitions
         run: |
-          # 创建burn目录用于存放烧录文件
-          mkdir -p burn
-          
           # 查找生成的镜像文件
           diskimg=$(ls output/images/*.img)
           # 挂载镜像为loop设备
@@ -321,7 +339,7 @@ jobs:
           # 修改权限
           sudo chown $(id -u):$(id -g) -R burn/
 
-      # 步骤8：生成Amlogic烧录镜像
+      # 步骤9：生成Amlogic烧录镜像
       - name: Generate burn image
         run: |
           # 生成分区校验文件
@@ -341,7 +359,7 @@ jobs:
           burnimg=${prefix}.burn.img
           ./AmlImg pack $burnimg burn/
 
-      # 步骤9：生成SHA256校验和并压缩镜像
+      # 步骤10：生成SHA256校验和并压缩镜像
       - name: Hash and compress images
         run: |
           for f in output/images/*.img; do
@@ -349,21 +367,21 @@ jobs:
             xz --threads=0 --compress "$f"     # 使用xz多线程压缩
           done
 
-      # 步骤10：上传镜像作为artifacts
+      # 步骤11：上传镜像作为artifacts
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.RELEASE }}-${{ matrix.BRANCH }}-${{ matrix.TYPE == 'desktop' && matrix.DESKTOP_ENVIRONMENT || matrix.TYPE }}
           path: output/images/*  # 上传所有镜像文件
 
-      # 步骤11：生成Release信息（SHA256校验和）
+      # 步骤12：生成Release信息（SHA256校验和）
       - name: Generate release informations
         run: |
           cat <<EOF | sed -E 's/^  //' | tee Release.md
             $(cat sha256sum | awk '{printf "%s: `%s`\n", $2, $1}')
           EOF
 
-      # 步骤12：上传镜像到GitHub Release
+      # 步骤13：上传镜像到GitHub Release
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
