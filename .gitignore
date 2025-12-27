@@ -1,13 +1,21 @@
 # ============================================
-# 忽略除 .github 之外的所有文件
+# 忽略除 .github 和必要目录之外的所有文件
 # ============================================
 
 # 忽略所有文件和目录
 *
 
-# 但不忽略 .github 目录
+# 不忽略 .github 目录
 !.github
 !.github/**
+
+# 不忽略 patches 目录（RTL8851BU 驱动补丁）
+!patches
+!patches/**
+
+# 不忽略 userpatches 目录（Armbian overlay 配置）
+!userpatches
+!userpatches/**
 
 # 不忽略 .gitignore 本身
 !.gitignore

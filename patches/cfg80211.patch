@@ -1,0 +1,134 @@
+diff --git a/os_dep/linux/ioctl_cfg80211.c b/os_dep/linux/ioctl_cfg80211.c
+index d8cd061..f8542f7 100644
+--- a/os_dep/linux/ioctl_cfg80211.c
++++ b/os_dep/linux/ioctl_cfg80211.c
+@@ -234,70 +234,77 @@ u8 rtw_cfg80211_ch_switch_notify(_adapter *adapter,
+ ////#endif
+ 
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0))
+-	struct cfg80211_chan_def chdef;
+-	#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0)) || defined(CONFIG_MLD_KERNEL_PATCH)
+-	u16 punct_bitmap = 0; /*TBD*/
+-	#endif
++	{
++		struct cfg80211_chan_def chdef;
++		#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0)) || defined(CONFIG_MLD_KERNEL_PATCH)
++		u16 punct_bitmap = 0; /*TBD*/
++		#endif
+ 
+-	ret = rtw_chdef_to_cfg80211_chan_def(wiphy, &chdef, rtw_chdef, ht);
+-	if (ret != _SUCCESS)
+-		goto exit;
++		ret = rtw_chdef_to_cfg80211_chan_def(wiphy, &chdef, rtw_chdef, ht);
++		if (ret != _SUCCESS)
++			goto exit;
++
++		#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 19, 0))
++		if (started) {
++			#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)) && (LINUX_VERSION_CODE < KERNEL_VERSION(6, 9, 0))
++			#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0))
++			cfg80211_ch_switch_started_notify(adapter->pnetdev, &chdef, link_id, 0, false);
++			#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0)) || defined(CONFIG_MLD_KERNEL_PATCH)
++			cfg80211_ch_switch_started_notify(adapter->pnetdev, &chdef, link_id, 0, false, punct_bitmap);
++			#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 78))
++			cfg80211_ch_switch_started_notify(adapter->pnetdev, &chdef, link_id, 0, false);
++			#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0))
++			/* --- cfg80211_ch_switch_started_notfiy() ---
++			 *  A new parameter, bool quiet, is added from Linux kernel v5.11,
++			 *  to see if block-tx was requested by the AP. since currently,
++			 *  the API is used for station before connected in rtw_chk_start_clnt_join()
++			 *  the quiet is set to false here first. May need to refine it if
++			 *  called by others with block-tx.
++			 */
++			cfg80211_ch_switch_started_notify(adapter->pnetdev, &chdef, 0, false);
++			#else
++			cfg80211_ch_switch_started_notify(adapter->pnetdev, &chdef, 0);
++			#endif
++			#endif /* (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)) && (LINUX_VERSION_CODE < KERNEL_VERSION(6, 9, 0)) */
++			goto exit;
++		}
++		#endif
++
++		if (!rtw_cfg80211_allow_ch_switch_notify(adapter))
++			goto exit;
++
++		if (!rtw_cfg80211_allow_ch_switch_notify(adapter))
++			goto exit;
+ 
+-	#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 19, 0))
+-	if (started) {
+-		#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)) && (LINUX_VERSION_CODE < KERNEL_VERSION(6, 9, 0))
+ 		#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0))
+-		cfg80211_ch_switch_started_notify(adapter->pnetdev, &chdef, link_id, 0, false);
++		cfg80211_ch_switch_notify(adapter->pnetdev, &chdef, link_id);
+ 		#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0)) || defined(CONFIG_MLD_KERNEL_PATCH)
+-		cfg80211_ch_switch_started_notify(adapter->pnetdev, &chdef, link_id, 0, false, punct_bitmap);
+-		#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 78))
+-		cfg80211_ch_switch_started_notify(adapter->pnetdev, &chdef, link_id, 0, false);
+-		#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0))
+-		/* --- cfg80211_ch_switch_started_notfiy() ---
+-		 *  A new parameter, bool quiet, is added from Linux kernel v5.11,
+-		 *  to see if block-tx was requested by the AP. since currently,
+-		 *  the API is used for station before connected in rtw_chk_start_clnt_join()
+-		 *  the quiet is set to false here first. May need to refine it if
+-		 *  called by others with block-tx.
+-		 */
+-		cfg80211_ch_switch_started_notify(adapter->pnetdev, &chdef, 0, false);
++		cfg80211_ch_switch_notify(adapter->pnetdev, &chdef, link_id, punct_bitmap);
++		#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 2))
++		/* ToDo CONFIG_RTW_MLD */
++		cfg80211_ch_switch_notify(adapter->pnetdev, &chdef, link_id);
+ 		#else
+-		cfg80211_ch_switch_started_notify(adapter->pnetdev, &chdef, 0);
++		cfg80211_ch_switch_notify(adapter->pnetdev, &chdef);
+ 		#endif
+-		goto exit;
+ 	}
+-	#endif
+ 
+-	if (!rtw_cfg80211_allow_ch_switch_notify(adapter))
+-		goto exit;
+-
+-	#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0)) && (LINUX_VERSION_CODE < KERNEL_VERSION(6, 9, 0))
+-	#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0))
+-	cfg80211_ch_switch_notify(adapter->pnetdev, &chdef, link_id);
+-	#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0)) || defined(CONFIG_MLD_KERNEL_PATCH)
+-	cfg80211_ch_switch_notify(adapter->pnetdev, &chdef, link_id, punct_bitmap);
+-	#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 2))
+-	/* ToDo CONFIG_RTW_MLD */
+-	cfg80211_ch_switch_notify(adapter->pnetdev, &chdef, link_id);
+-	#else
+-	cfg80211_ch_switch_notify(adapter->pnetdev, &chdef);
+-	#endif
++#else /* LINUX_VERSION_CODE < KERNEL_VERSION(3, 8, 0) */
++	{
++		int freq = rtw_bch2freq(rtw_chdef->band, rtw_chdef->chan);
++		enum nl80211_channel_type ctype;
+ 
+-#else
+-	int freq = rtw_bch2freq(rtw_chdef->band, rtw_chdef->chan);
+-	enum nl80211_channel_type ctype;
++		if (!rtw_cfg80211_allow_ch_switch_notify(adapter))
++			goto exit;
+ 
+-	if (!rtw_cfg80211_allow_ch_switch_notify(adapter))
+-		goto exit;
++		if (!freq) {
++			ret = _FAIL;
++			goto exit;
++		}
+ 
+-	if (!freq) {
+-		ret = _FAIL;
+-		goto exit;
++		ctype = rtw_chdef_to_nl80211_channel_type(rtw_chdef, ht);
++		cfg80211_ch_switch_notify(adapter->pnetdev, freq, ctype);
+ 	}
+-
+-	ctype = rtw_chdef_to_nl80211_channel_type(rtw_chdef, ht);
+-	cfg80211_ch_switch_notify(adapter->pnetdev, freq, ctype);
+-#endif
++#endif /* (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0)) */
+ 
+ exit:
+ 	return ret;
