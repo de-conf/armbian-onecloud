@@ -179,8 +179,70 @@ jobs:
             echo "::endgroup::"
           done
 
-      # 步骤4：编译内核
-      - name: Build
+      # 步骤4：准备RTL8851BU驱动源码并应用补丁
+      - name: Prepare RTL8851BU driver source and apply patches
+        run: |
+          echo "========================================"
+          echo ">>> Preparing RTL8851BU WiFi Driver"
+          echo "========================================"
+          
+          echo "::group::Clone driver source"
+          git clone --depth=1 -b ${RTL8851BU_BRANCH} \
+            https://github.com/${RTL8851BU_REPO}.git \
+            rtl8851bu-src
+          echo "Driver source cloned to rtl8851bu-src/"
+          ls -la rtl8851bu-src/
+          echo "::endgroup::"
+          
+          echo "::group::Checkout current repo for patches"
+          git clone --depth=1 -b ${SCRIPT_REF} \
+            https://github.com/${SCRIPT_REPO}.git \
+            script-patches
+          echo "Patches available:"
+          ls -la script-patches/patches/
+          echo "::endgroup::"
+          
+          echo "::group::Apply patches to RTL8851BU driver"
+          cd rtl8851bu-src
+          
+          # 应用 rtl8851bu-arm.patch (ARM 平台适配)
+          if [ -f "../script-patches/patches/rtl8851bu-arm.patch" ]; then
+            echo "Applying rtl8851bu-arm.patch..."
+            patch -p1 < ../script-patches/patches/rtl8851bu-arm.patch || {
+              echo "Patch failed, trying manual modification..."
+              sed -i 's/^CONFIG_PLATFORM_I386_PC = y/CONFIG_PLATFORM_I386_PC = n/' Makefile
+              sed -i 's/^CONFIG_PLATFORM_ARM_SUNxI = n/CONFIG_PLATFORM_ARM_SUNxI = y/' Makefile
+            }
+          else
+            echo "rtl8851bu-arm.patch not found, using manual modification..."
+            sed -i 's/^CONFIG_PLATFORM_I386_PC = y/CONFIG_PLATFORM_I386_PC = n/' Makefile
+            sed -i 's/^CONFIG_PLATFORM_ARM_SUNxI = n/CONFIG_PLATFORM_ARM_SUNxI = y/' Makefile
+          fi
+          
+          # 应用 cfg80211.patch (cfg80211 兼容性修复)
+          if [ -f "../script-patches/patches/cfg80211.patch" ]; then
+            echo "Applying cfg80211.patch..."
+            patch -p1 < ../script-patches/patches/cfg80211.patch || echo "cfg80211.patch may have already been applied or not applicable"
+          fi
+          
+          # 应用 wifi_regd.patch (WiFi 监管域修复)
+          if [ -f "../script-patches/patches/wifi_regd.patch" ]; then
+            echo "Applying wifi_regd.patch..."
+            patch -p1 < ../script-patches/patches/wifi_regd.patch || echo "wifi_regd.patch may have already been applied or not applicable"
+          fi
+          
+          echo "Platform configuration after patching:"
+          grep "^CONFIG_PLATFORM" Makefile | head -10
+          cd ..
+          echo "::endgroup::"
+          
+          # 清理临时克隆的仓库
+          rm -rf script-patches
+          
+          echo ">>> RTL8851BU driver source prepared with patches"
+
+      # 步骤5：编译内核
+      - name: Build kernel
         run: |
           # 禁用远程缓存更新（避免污染官方缓存）
           export GITHUB_ACTIONS=false
@@ -189,24 +251,83 @@ jobs:
           # BOARD=onecloud - 目标设备：Onecloud
           # BRANCH - 内核分支
           # EXPERT=yes - 专家模式
-          # USE_CCACHE=no - 不使用编译缓存
+          # USE_CCACHE=yes - 使用编译缓存
           sudo --preserve-env \
             ./compile.sh kernel \
               ALLOW_ROOT=yes \
               BOARD=onecloud \
               BRANCH=${{ matrix.BRANCH }} \
               EXPERT=yes \
-              USE_CCACHE=no
+              USE_CCACHE=yes
           sudo chown $(id -u):$(id -g) -R output/
 
-      # 步骤5：上传deb包作为artifacts（供后续job使用）
-      - name: Upload artifacts
+      # 步骤6：编译RTL8851BU驱动模块
+      - name: Build RTL8851BU driver module
+        run: |
+          echo "========================================"
+          echo ">>> Building RTL8851BU WiFi Driver"
+          echo "========================================"
+          
+          # 查找内核源码和版本
+          echo "::group::Find kernel source and version"
+          KERNEL_DIR=$(find cache/sources/kernel -maxdepth 1 -type d -name 'linux-*' | head -1)
+          if [ -z "$KERNEL_DIR" ]; then
+            echo "ERROR: Kernel source directory not found!"
+            exit 1
+          fi
+          echo "Kernel source: $KERNEL_DIR"
+          
+          # 从 output/debs 获取内核版本
+          KERNEL_DEB=$(ls output/debs/linux-image-*.deb 2>/dev/null | head -1)
+          if [ -n "$KERNEL_DEB" ]; then
+            KERNEL_VERSION=$(echo "$KERNEL_DEB" | sed -E 's/.*linux-image-([^_]+)_.*/\1/')
+          else
+            KERNEL_VERSION=$(cat "$KERNEL_DIR/include/config/kernel.release" 2>/dev/null || echo "unknown")
+          fi
+          echo "Kernel version: $KERNEL_VERSION"
+          echo "::endgroup::"
+          
+          # 编译驱动
+          echo "::group::Compile RTL8851BU driver"
+          cd rtl8851bu-src
+          make KVER=$KERNEL_VERSION KSRC=$GITHUB_WORKSPACE/$KERNEL_DIR -j$(nproc) 2>&1 | tee build.log
+          
+          # 检查编译结果
+          if ls *.ko 1>/dev/null 2>&1; then
+            echo ">>> Driver compiled successfully!"
+            ls -la *.ko
+          else
+            echo ">>> Checking for .ko in subdirectories..."
+            find . -name '*.ko' -type f
+          fi
+          cd ..
+          echo "::endgroup::"
+          
+          # 保存驱动模块供后续使用
+          echo "::group::Save driver module"
+          mkdir -p output/rtl8851bu
+          find rtl8851bu-src -name '*.ko' -exec cp -v {} output/rtl8851bu/ \;
+          echo "KERNEL_VERSION=$KERNEL_VERSION" > output/rtl8851bu/info.txt
+          ls -la output/rtl8851bu/
+          echo "::endgroup::"
+          
+          echo ">>> RTL8851BU driver build completed"
+
+      # 步骤7：上传deb包作为artifacts（供后续job使用）
+      - name: Upload deb artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: debs-${{ matrix.BRANCH }}  # artifact名称
-          path: output/debs/*               # 上传所有deb文件
+          name: debs-${{ matrix.BRANCH }}
+          path: output/debs/*
 
-      # 步骤6：上传deb包到GitHub Release
+      # 步骤8：上传RTL8851BU驱动作为artifacts
+      - name: Upload RTL8851BU driver artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rtl8851bu-${{ matrix.BRANCH }}
+          path: output/rtl8851bu/*
+
+      # 步骤9：上传deb包到GitHub Release
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
@@ -228,7 +349,7 @@ jobs:
         BRANCH:
           - current      # 内核分支
         RELEASE:
-          - trixie       # Debian 13 (测试版)
+          - ubuntu-24.04
         TYPE:
           - minimal      # 镜像类型：minimal(最小化) 或 desktop(桌面版)
 
@@ -267,7 +388,7 @@ jobs:
           ref: ${{ env.SCRIPT_SHA }}
           path: script-repo
 
-      # 步骤5：复制userpatches文件（overlay和自定义脚本）
+      # 步骤5：复制userpatches文件（仅overlay配置）
       - name: Copy userpatches files
         run: |
           echo "::group::Setup userpatches"
@@ -280,23 +401,23 @@ jobs:
             find userpatches/overlay -type f
           fi
           
-          # 复制 customize-image.sh（用于安装 RTL8851BU 驱动）
-          if [ -f "script-repo/userpatches/customize-image.sh" ]; then
-            cp -v script-repo/userpatches/customize-image.sh userpatches/
-            chmod +x userpatches/customize-image.sh
-            echo "customize-image.sh copied"
-          fi
-          
           echo "::endgroup::"
 
       # 步骤6：下载之前构建的内核deb包
       - name: Download debs
         uses: actions/download-artifact@v4
         with:
-          name: debs-${{ matrix.BRANCH }}  # 下载对应分支的deb包
-          path: output/debs/                # 保存到output/debs目录
+          name: debs-${{ matrix.BRANCH }}
+          path: output/debs/
 
-      # 步骤7：构建完整系统镜像
+      # 步骤7：下载预编译的RTL8851BU驱动模块
+      - name: Download RTL8851BU driver
+        uses: actions/download-artifact@v4
+        with:
+          name: rtl8851bu-${{ matrix.BRANCH }}
+          path: output/rtl8851bu/
+
+      # 步骤8：构建完整系统镜像
       - name: Build
         run: |
           # 禁用远程缓存更新
@@ -334,7 +455,81 @@ jobs:
               COMPRESS_OUTPUTIMAGE=img
           sudo chown $(id -u):$(id -g) -R output/
 
-      # 步骤8：安装烧录镜像制作工具
+      # 步骤9：安装RTL8851BU WiFi驱动到镜像
+      - name: Install RTL8851BU driver
+        run: |
+          echo "========================================"
+          echo ">>> RTL8851BU WiFi Driver Installation"
+          echo "========================================"
+          
+          # 显示预编译的驱动模块
+          echo "::group::Check pre-built driver module"
+          ls -la output/rtl8851bu/
+          cat output/rtl8851bu/info.txt 2>/dev/null || true
+          echo "::endgroup::"
+          
+          # 查找生成的镜像文件
+          diskimg=$(ls output/images/*.img)
+          echo ">>> Target image: $diskimg"
+          
+          # 挂载镜像
+          echo "::group::Mount image"
+          loop=$(sudo losetup --find --show --partscan $diskimg)
+          echo "Loop device: $loop"
+          
+          sudo mkdir -p /mnt/armbian
+          sudo mount ${loop}p2 /mnt/armbian
+          sudo mount ${loop}p1 /mnt/armbian/boot
+          echo "Image mounted at /mnt/armbian"
+          ls -la /mnt/armbian/
+          echo "::endgroup::"
+          
+          # 获取内核版本
+          echo "::group::Get kernel version"
+          KERNEL_VERSION=$(ls /mnt/armbian/lib/modules/ | head -1)
+          echo "Kernel version in image: $KERNEL_VERSION"
+          echo "::endgroup::"
+          
+          # 安装驱动模块
+          echo "::group::Install driver module"
+          MODULE_DIR="/mnt/armbian/lib/modules/$KERNEL_VERSION/kernel/drivers/net/wireless"
+          sudo mkdir -p "$MODULE_DIR"
+          
+          # 复制驱动模块
+          for ko in output/rtl8851bu/*.ko; do
+            if [ -f "$ko" ]; then
+              sudo cp -v "$ko" "$MODULE_DIR/"
+              echo "Installed: $(basename $ko)"
+            fi
+          done
+          
+          # 更新模块依赖
+          echo "Running depmod..."
+          sudo chroot /mnt/armbian /sbin/depmod -a "$KERNEL_VERSION"
+          echo "::endgroup::"
+          
+          # 验证安装
+          echo "::group::Verify installation"
+          echo "Installed modules:"
+          find /mnt/armbian/lib/modules/$KERNEL_VERSION -name '*8851*' -o -name '*8831*' 2>/dev/null || echo "No matching modules found"
+          echo ""
+          echo "modules.dep entries:"
+          grep -i '8851\|8831' /mnt/armbian/lib/modules/$KERNEL_VERSION/modules.dep 2>/dev/null || echo "No entries found"
+          echo "::endgroup::"
+          
+          # 卸载镜像
+          echo "::group::Unmount image"
+          sudo umount /mnt/armbian/boot
+          sudo umount /mnt/armbian
+          sudo losetup -d $loop
+          echo "Image unmounted"
+          echo "::endgroup::"
+          
+          echo "========================================"
+          echo ">>> RTL8851BU driver installation done!"
+          echo "========================================"
+
+      # 步骤10：安装烧录镜像制作工具
       - name: Install Dependents
         run: |
           sudo apt install img2simg  # Android sparse image工具
@@ -344,7 +539,7 @@ jobs:
           curl -L -o ./AmlImg https://github.com/hzyitc/AmlImg/releases/download/$ver/AmlImg_${ver}_linux_amd64
           chmod +x ./AmlImg
 
-      # 步骤9：下载并解包U-Boot
+      # 步骤11：下载并解包U-Boot
       - name: Download and unpack the latest u-boot
         run: |
           echo "::group::Download"
@@ -355,7 +550,7 @@ jobs:
           ./AmlImg unpack ./uboot.img burn/
           echo "::endgroup::"
 
-      # 步骤10：提取boot和rootfs分区
+      # 步骤12：提取boot和rootfs分区
       - name: Extract boot and rootfs partitions
         run: |
           # 查找生成的镜像文件
@@ -371,7 +566,7 @@ jobs:
           # 修改权限
           sudo chown $(id -u):$(id -g) -R burn/
 
-      # 步骤11：生成Amlogic烧录镜像
+      # 步骤13：生成Amlogic烧录镜像
       - name: Generate burn image
         run: |
           # 生成分区校验文件
@@ -391,7 +586,7 @@ jobs:
           burnimg=${prefix}.burn.img
           ./AmlImg pack $burnimg burn/
 
-      # 步骤12：生成SHA256校验和并压缩镜像
+      # 步骤14：生成SHA256校验和并压缩镜像
       - name: Hash and compress images
         run: |
           for f in output/images/*.img; do
@@ -399,21 +594,21 @@ jobs:
             xz --threads=0 --compress "$f"     # 使用xz多线程压缩
           done
 
-      # 步骤13：上传镜像作为artifacts
+      # 步骤15：上传镜像作为artifacts
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.RELEASE }}-${{ matrix.BRANCH }}-${{ matrix.TYPE == 'desktop' && matrix.DESKTOP_ENVIRONMENT || matrix.TYPE }}
           path: output/images/*  # 上传所有镜像文件
 
-      # 步骤14：生成Release信息（SHA256校验和）
+      # 步骤16：生成Release信息（SHA256校验和）
       - name: Generate release informations
         run: |
           cat <<EOF | sed -E 's/^  //' | tee Release.md
             $(cat sha256sum | awk '{printf "%s: `%s`\n", $2, $1}')
           EOF
 
-      # 步骤15：上传镜像到GitHub Release
+      # 步骤17：上传镜像到GitHub Release
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:

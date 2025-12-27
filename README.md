@@ -52,6 +52,34 @@ Please check the `dts` (added by `patch/kernel/archive/meson-6.12/onecloud-0001-
 
 NOTE: These pins in the `dts` were measured on `V1.0 board` and have not been verified on the V1.3 board.
 
+## Local Build (本地构建)
+
+You can build the Armbian image locally using the provided scripts:
+
+```bash
+# 1. Initialize and check dependencies
+chmod +x scripts/*.sh
+./scripts/quick-start.sh
+
+# 2. Build all (one command)
+./scripts/build-all.sh
+
+# Or build step by step:
+./scripts/01-prepare-armbian.sh   # Prepare Armbian environment
+./scripts/02-build-kernel.sh      # Build kernel
+./scripts/03-build-driver.sh      # Build RTL8851BU WiFi driver
+./scripts/04-build-image.sh       # Build system image
+./scripts/05-install-driver.sh    # Install driver to image
+./scripts/06-create-burn-image.sh # Create burn image
+```
+
+For more options:
+```bash
+./scripts/build-all.sh --help
+```
+
+See [scripts/README.md](scripts/README.md) for detailed documentation.
+
 ## Related link
 
 [`armbian/build`](https://github.com/armbian/build) - Armbian official repository

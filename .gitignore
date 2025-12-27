@@ -1,22 +1,13 @@
-# 忽略原始CI配置文件
-.github/workflows/ci-original.yml
+# ============================================
+# 忽略除 .github 之外的所有文件
+# ============================================
 
-# 常见的临时文件和编辑器文件
-*.swp
-*.swo
-*~
-.DS_Store
-Thumbs.db
+# 忽略所有文件和目录
+*
 
-# IDE配置
-.vscode/
-.idea/
-*.iml
+# 但不忽略 .github 目录
+!.github
+!.github/**
 
-# 构建输出
-output/
-build/
-dist/
-*.img
-*.xz
-*.deb
+# 不忽略 .gitignore 本身
+!.gitignore
