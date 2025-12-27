@@ -37,7 +37,7 @@ jobs:
   # ============================================
   prepare:
     name: Prepare
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     outputs:
       env: ${{ steps.get.outputs.env }}  # 输出环境变量给后续job使用
     steps:
@@ -145,7 +145,7 @@ jobs:
   build-debs:
     name: Build ${{ matrix.BRANCH }}
     needs: prepare  # 依赖prepare job完成
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false  # 某个matrix失败不影响其他
       matrix:
@@ -261,36 +261,292 @@ jobs:
               USE_CCACHE=yes
           sudo chown $(id -u):$(id -g) -R output/
 
-      # 步骤6：编译RTL8851BU驱动模块
+      # 步骤6：安装交叉编译器
+      - name: Install cross compiler
+        run: |
+          echo "::group::Install ARM cross compiler"
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-linux-gnueabihf
+          arm-linux-gnueabihf-gcc --version
+          echo "::endgroup::"
+
+      # 步骤7：编译RTL8851BU驱动模块
       - name: Build RTL8851BU driver module
         run: |
           echo "========================================"
           echo ">>> Building RTL8851BU WiFi Driver"
           echo "========================================"
           
+          # ============================================
           # 查找内核源码和版本
+          # 优先级：
+          # 1. Armbian 缓存的内核源码 (cache/sources/kernel)
+          # 2. 从 linux-headers deb 包提取
+          # ============================================
           echo "::group::Find kernel source and version"
-          KERNEL_DIR=$(find cache/sources/kernel -maxdepth 1 -type d -name 'linux-*' | head -1)
-          if [ -z "$KERNEL_DIR" ]; then
-            echo "ERROR: Kernel source directory not found!"
-            exit 1
-          fi
-          echo "Kernel source: $KERNEL_DIR"
           
-          # 从 output/debs 获取内核版本
+          # 方法1: 尝试查找 Armbian 缓存的内核源码
+          KERNEL_DIR=$(find cache/sources/kernel -maxdepth 1 -type d -name 'linux-*' 2>/dev/null | head -1)
+          
+          if [ -n "$KERNEL_DIR" ] && [ -d "$KERNEL_DIR" ]; then
+            echo "Found Armbian cached kernel source: $KERNEL_DIR"
+            KERNEL_SRC="$GITHUB_WORKSPACE/$KERNEL_DIR"
+          else
+            echo "Armbian kernel cache not found, extracting from linux-headers deb..."
+            
+            # 方法2: 从 linux-headers deb 包提取
+            HEADERS_DEB=$(ls output/debs/linux-headers-*.deb 2>/dev/null | head -1)
+            if [ -z "$HEADERS_DEB" ]; then
+              echo "ERROR: Neither kernel source nor linux-headers deb found!"
+              echo "Available debs:"
+              ls -la output/debs/ 2>/dev/null || echo "output/debs/ not found"
+              exit 1
+            fi
+            
+            echo "Extracting kernel headers from: $HEADERS_DEB"
+            
+            # 创建临时目录并解压
+            HEADERS_DIR="$GITHUB_WORKSPACE/kernel-headers"
+            rm -rf "$HEADERS_DIR"
+            mkdir -p "$HEADERS_DIR"
+            cd "$HEADERS_DIR"
+            
+            # 解压 deb 包
+            ar x "$GITHUB_WORKSPACE/$HEADERS_DEB"
+            
+            # 解压 data.tar (可能是 .xz, .gz, .zst)
+            if [ -f "data.tar.xz" ]; then
+              tar xf data.tar.xz
+            elif [ -f "data.tar.gz" ]; then
+              tar xf data.tar.gz
+            elif [ -f "data.tar.zst" ]; then
+              zstd -d data.tar.zst -o data.tar
+              tar xf data.tar
+            elif [ -f "data.tar" ]; then
+              tar xf data.tar
+            else
+              echo "ERROR: Cannot find data.tar in deb package"
+              ls -la
+              exit 1
+            fi
+            
+            # 清理临时文件
+            rm -f debian-binary control.tar.* data.tar*
+            
+            # 找到内核头文件目录
+            KERNEL_DIR=$(find "$HEADERS_DIR/usr/src" -maxdepth 1 -type d -name 'linux-headers-*' 2>/dev/null | head -1)
+            if [ -z "$KERNEL_DIR" ]; then
+              echo "ERROR: Cannot find linux-headers directory after extraction"
+              find "$HEADERS_DIR" -type d -name 'linux-*' 2>/dev/null
+              exit 1
+            fi
+            
+            # 移动到更简单的路径
+            mv "$KERNEL_DIR" "$HEADERS_DIR/linux-headers"
+            rm -rf "$HEADERS_DIR/usr"
+            KERNEL_SRC="$HEADERS_DIR/linux-headers"
+            
+            echo "Kernel headers extracted to: $KERNEL_SRC"
+            cd "$GITHUB_WORKSPACE"
+          fi
+          
+          # 获取内核版本
           KERNEL_DEB=$(ls output/debs/linux-image-*.deb 2>/dev/null | head -1)
           if [ -n "$KERNEL_DEB" ]; then
             KERNEL_VERSION=$(echo "$KERNEL_DEB" | sed -E 's/.*linux-image-([^_]+)_.*/\1/')
+          elif [ -f "$KERNEL_SRC/include/config/kernel.release" ]; then
+            KERNEL_VERSION=$(cat "$KERNEL_SRC/include/config/kernel.release")
           else
-            KERNEL_VERSION=$(cat "$KERNEL_DIR/include/config/kernel.release" 2>/dev/null || echo "unknown")
+            # 从目录名提取版本
+            KERNEL_VERSION=$(basename "$KERNEL_SRC" | sed 's/linux-headers-//' | sed 's/linux-//')
           fi
           echo "Kernel version: $KERNEL_VERSION"
+          echo "Kernel source: $KERNEL_SRC"
+          echo "::endgroup::"
+          
+          # 准备内核构建工具 (fixdep 和 modpost)
+          echo "::group::Prepare kernel build tools (fixdep, modpost)"
+          cd "$KERNEL_SRC"
+          
+          # 编译基础脚本工具（fixdep 等）
+          echo "Building scripts_basic..."
+          make ARCH=arm scripts_basic 2>&1 | tail -20 || {
+            echo "make scripts_basic failed, trying manual compilation..."
+          }
+          
+          # 如果 fixdep 不存在，手动编译
+          if [ ! -x "scripts/basic/fixdep" ]; then
+            echo "Manual compilation of fixdep..."
+            mkdir -p scripts/basic
+            if [ -f "scripts/basic/fixdep.c" ]; then
+              gcc -O2 -o scripts/basic/fixdep scripts/basic/fixdep.c 2>/dev/null && \
+                echo "fixdep compiled successfully" || echo "fixdep compilation failed"
+            else
+              echo "fixdep.c not found, downloading..."
+              curl -sL "https://raw.githubusercontent.com/torvalds/linux/master/scripts/basic/fixdep.c" \
+                -o scripts/basic/fixdep.c 2>/dev/null && \
+              gcc -O2 -o scripts/basic/fixdep scripts/basic/fixdep.c 2>/dev/null && \
+                echo "fixdep downloaded and compiled" || echo "fixdep download/compile failed"
+            fi
+          fi
+          
+          # 编译 scripts/mod 工具（modpost 等）
+          if [ -d "scripts/mod" ]; then
+            echo "Building scripts (modpost etc.)..."
+            make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCC=gcc scripts 2>&1 | tail -30 || {
+              echo "make scripts failed, trying manual modpost compilation..."
+            }
+            
+            # 如果 modpost 不存在，手动编译
+            if [ ! -x "scripts/mod/modpost" ]; then
+              echo "Manual compilation of modpost..."
+              cd scripts/mod
+              
+              # ============================================
+              # 步骤 0: 检查并下载缺失的源文件
+              # 从 Linux 内核仓库下载 modpost 相关源码
+              # ============================================
+              LINUX_VERSION="v6.12"
+              LINUX_RAW_URL="https://raw.githubusercontent.com/torvalds/linux/${LINUX_VERSION}/scripts"
+              
+              echo "Checking modpost source files..."
+              
+              # 需要的源文件列表
+              mod_files="modpost.c modpost.h sumversion.c symsearch.c mk_elfconfig.c empty.c"
+              include_files="hashtable.h list.h"
+              
+              for src_file in $mod_files; do
+                if [ ! -f "$src_file" ]; then
+                  echo "  Downloading scripts/mod/${src_file}..."
+                  curl -sL "${LINUX_RAW_URL}/mod/${src_file}" -o "$src_file" 2>/dev/null || \
+                    echo "  Failed to download ${src_file}"
+                fi
+              done
+              
+              # 检查并下载 scripts/include 目录下的头文件
+              mkdir -p ../include
+              for inc_file in $include_files; do
+                if [ ! -f "../include/$inc_file" ]; then
+                  echo "  Downloading scripts/include/${inc_file}..."
+                  curl -sL "${LINUX_RAW_URL}/include/${inc_file}" -o "../include/$inc_file" 2>/dev/null || \
+                    echo "  Failed to download ${inc_file}"
+                fi
+              done
+              
+              # 步骤 1: 编译 mk_elfconfig
+              if [ -f "mk_elfconfig.c" ] && [ ! -x "mk_elfconfig" ]; then
+                echo "  [1/5] Compiling mk_elfconfig..."
+                gcc -O2 -o mk_elfconfig mk_elfconfig.c 2>/dev/null && \
+                  echo "  mk_elfconfig compiled" || echo "  mk_elfconfig failed"
+              fi
+              
+              # 步骤 2: 生成 elfconfig.h
+              if [ -f "empty.c" ] && [ ! -f "elfconfig.h" ]; then
+                echo "  [2/5] Generating elfconfig.h..."
+                arm-linux-gnueabihf-gcc -c -o empty.o empty.c 2>/dev/null || \
+                  gcc -c -o empty.o empty.c 2>/dev/null
+                if [ -x "mk_elfconfig" ] && [ -f "empty.o" ]; then
+                  ./mk_elfconfig < empty.o > elfconfig.h 2>/dev/null && \
+                    echo "  elfconfig.h generated" || echo "  elfconfig.h generation failed"
+                fi
+              fi
+              
+              # 步骤 3: 编译 modpost 组件
+              if [ -f "modpost.c" ] && [ -f "elfconfig.h" ]; then
+                echo "  [3/5] Compiling modpost components..."
+                gcc -O2 -I../include -I. -c modpost.c -o modpost.o 2>/dev/null && \
+                  echo "  modpost.o compiled" || echo "  modpost.o failed"
+                gcc -O2 -I../include -I. -c sumversion.c -o sumversion.o 2>/dev/null && \
+                  echo "  sumversion.o compiled" || echo "  sumversion.o failed"
+                gcc -O2 -I../include -I. -c symsearch.c -o symsearch.o 2>/dev/null && \
+                  echo "  symsearch.o compiled" || echo "  symsearch.o failed"
+              fi
+              
+              # 步骤 4: 创建 file2alias stub
+              # 问题：modpost 链接时报错：
+              #   undefined reference to `handle_moddevtable'
+              #   undefined reference to `add_moddevtable'
+              # 原因：file2alias.c 需要 devicetable-offsets.h，该文件由内核构建生成
+              # 解决：创建 stub 文件提供空实现
+              echo "  [4/5] Creating file2alias stub..."
+              cat > file2alias_stub.c << 'STUB_EOF'
+/*
+ * Stub file2alias.c - provides empty implementations
+ *
+ * Problem: file2alias.c requires devicetable-offsets.h which is generated
+ * by kernel build system during make modules_prepare.
+ * For external module compilation, device table handling is not required.
+ *
+ * Solution: Provide empty implementations to skip device table handling.
+ */
+#include "modpost.h"
+
+void handle_moddevtable(struct module *mod, struct elf_info *info,
+                        Elf_Sym *sym, const char *symname) {
+    /* Empty stub - device table handling not needed for external modules */
+}
+
+void add_moddevtable(struct buffer *buf, struct module *mod) {
+    /* Empty stub */
+}
+STUB_EOF
+              gcc -O2 -I../include -I. -c file2alias_stub.c -o file2alias.o 2>/dev/null && \
+                echo "  file2alias.o (stub) compiled" || echo "  file2alias.o failed"
+              
+              # 步骤 5: 链接 modpost
+              echo "  [5/5] Linking modpost..."
+              if [ -f "modpost.o" ] && [ -f "file2alias.o" ] && [ -f "sumversion.o" ]; then
+                if [ -f "symsearch.o" ]; then
+                  gcc -O2 -o modpost modpost.o file2alias.o sumversion.o symsearch.o 2>/dev/null && \
+                    echo "  modpost linked successfully" || {
+                      echo "  modpost link failed, trying without symsearch..."
+                      gcc -O2 -o modpost modpost.o file2alias.o sumversion.o 2>/dev/null && \
+                        echo "  modpost linked (without symsearch)" || echo "  modpost link failed"
+                    }
+                else
+                  gcc -O2 -o modpost modpost.o file2alias.o sumversion.o 2>/dev/null && \
+                    echo "  modpost linked (without symsearch)" || echo "  modpost link failed"
+                fi
+              else
+                echo "  Missing required .o files, cannot link modpost"
+              fi
+              
+              cd "$KERNEL_SRC"
+            fi
+          fi
+          
+          # 准备模块编译环境
+          echo "Running modules_prepare..."
+          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCC=gcc modules_prepare 2>/dev/null || true
+          
+          # 检查工具状态
+          echo "Build tools status:"
+          [ -x "scripts/basic/fixdep" ] && echo "  fixdep: OK" || echo "  fixdep: MISSING"
+          [ -x "scripts/mod/modpost" ] && echo "  modpost: OK" || echo "  modpost: MISSING"
+          
+          cd "$GITHUB_WORKSPACE"
+          echo "::endgroup::"
+          
+          # 设置编译环境变量
+          export ARCH=arm
+          export CROSS_COMPILE=arm-linux-gnueabihf-
+          
+          echo "::group::Build environment"
+          echo "ARCH=$ARCH"
+          echo "CROSS_COMPILE=$CROSS_COMPILE"
+          echo "KVER=$KERNEL_VERSION"
+          echo "KSRC=$KERNEL_SRC"
           echo "::endgroup::"
           
           # 编译驱动
           echo "::group::Compile RTL8851BU driver"
           cd rtl8851bu-src
-          make KVER=$KERNEL_VERSION KSRC=$GITHUB_WORKSPACE/$KERNEL_DIR -j$(nproc) 2>&1 | tee build.log
+          
+          # 使用交叉编译器编译驱动
+          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- \
+            KVER=$KERNEL_VERSION \
+            KSRC=$KERNEL_SRC \
+            -j$(nproc) 2>&1 | tee build.log
           
           # 检查编译结果
           if ls *.ko 1>/dev/null 2>&1; then
@@ -308,26 +564,40 @@ jobs:
           mkdir -p output/rtl8851bu
           find rtl8851bu-src -name '*.ko' -exec cp -v {} output/rtl8851bu/ \;
           echo "KERNEL_VERSION=$KERNEL_VERSION" > output/rtl8851bu/info.txt
+          echo "BUILD_DATE=$(date +%Y-%m-%d_%H:%M:%S)" >> output/rtl8851bu/info.txt
           ls -la output/rtl8851bu/
+          echo "::endgroup::"
+          
+          # 验证驱动模块
+          echo "::group::Verify driver module"
+          KO_COUNT=$(find output/rtl8851bu -name '*.ko' | wc -l)
+          if [ "$KO_COUNT" -eq 0 ]; then
+            echo "ERROR: No .ko files found! Build may have failed."
+            echo "Build log tail:"
+            tail -50 rtl8851bu-src/build.log
+            exit 1
+          fi
+          echo "Found $KO_COUNT driver module(s)"
+          file output/rtl8851bu/*.ko
           echo "::endgroup::"
           
           echo ">>> RTL8851BU driver build completed"
 
-      # 步骤7：上传deb包作为artifacts（供后续job使用）
+      # 步骤8：上传deb包作为artifacts（供后续job使用）
       - name: Upload deb artifacts
         uses: actions/upload-artifact@v4
         with:
           name: debs-${{ matrix.BRANCH }}
           path: output/debs/*
 
-      # 步骤8：上传RTL8851BU驱动作为artifacts
+      # 步骤9：上传RTL8851BU驱动作为artifacts
       - name: Upload RTL8851BU driver artifacts
         uses: actions/upload-artifact@v4
         with:
           name: rtl8851bu-${{ matrix.BRANCH }}
           path: output/rtl8851bu/*
 
-      # 步骤9：上传deb包到GitHub Release
+      # 步骤10：上传deb包到GitHub Release
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
@@ -342,14 +612,14 @@ jobs:
   build:
     name: Build ${{ matrix.RELEASE }}-${{ matrix.BRANCH }}-${{ matrix.TYPE == 'desktop' && matrix.DESKTOP_ENVIRONMENT || matrix.TYPE }}
     needs: [ prepare, build-debs ]  # 依赖前两个job完成
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         BRANCH:
           - current      # 内核分支
         RELEASE:
-          - ubuntu-24.04
+          - trixie       # Debian 13 (最新稳定版)
         TYPE:
           - minimal      # 镜像类型：minimal(最小化) 或 desktop(桌面版)
 
