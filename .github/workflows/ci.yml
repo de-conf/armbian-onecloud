@@ -23,6 +23,8 @@ env:
   ARMBIAN_REF: main                         # Armbian仓库分支
   PATCHES: 4077,5076                        # 需要应用的补丁PR编号
   PATCHES_DISABLED: 5082                    # 已禁用的补丁（备注用）
+  RTL8851BU_REPO: heesn/rtl8831             # RTL8851BU WiFi驱动仓库
+  RTL8851BU_BRANCH: main                    # RTL8851BU驱动分支
 
 # GitHub Actions权限配置
 permissions:
@@ -257,14 +259,44 @@ jobs:
             echo "::endgroup::"
           done
 
-      # 步骤4：下载之前构建的内核deb包
+      # 步骤4：检出当前仓库获取overlay配置
+      - name: Checkout current repo for overlay
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SCRIPT_REPO }}
+          ref: ${{ env.SCRIPT_SHA }}
+          path: script-repo
+
+      # 步骤5：复制userpatches文件（overlay和自定义脚本）
+      - name: Copy userpatches files
+        run: |
+          echo "::group::Setup userpatches"
+          mkdir -p userpatches
+          
+          # 复制 overlay 文件（包含 /etc/modules-load.d/rtl8851bu.conf）
+          if [ -d "script-repo/userpatches/overlay" ]; then
+            cp -rv script-repo/userpatches/overlay userpatches/
+            echo "Overlay files copied:"
+            find userpatches/overlay -type f
+          fi
+          
+          # 复制 customize-image.sh（用于安装 RTL8851BU 驱动）
+          if [ -f "script-repo/userpatches/customize-image.sh" ]; then
+            cp -v script-repo/userpatches/customize-image.sh userpatches/
+            chmod +x userpatches/customize-image.sh
+            echo "customize-image.sh copied"
+          fi
+          
+          echo "::endgroup::"
+
+      # 步骤6：下载之前构建的内核deb包
       - name: Download debs
         uses: actions/download-artifact@v4
         with:
           name: debs-${{ matrix.BRANCH }}  # 下载对应分支的deb包
           path: output/debs/                # 保存到output/debs目录
 
-      # 步骤5：构建完整系统镜像
+      # 步骤7：构建完整系统镜像
       - name: Build
         run: |
           # 禁用远程缓存更新
@@ -302,7 +334,7 @@ jobs:
               COMPRESS_OUTPUTIMAGE=img
           sudo chown $(id -u):$(id -g) -R output/
 
-      # 步骤6：安装烧录镜像制作工具
+      # 步骤8：安装烧录镜像制作工具
       - name: Install Dependents
         run: |
           sudo apt install img2simg  # Android sparse image工具
@@ -312,7 +344,7 @@ jobs:
           curl -L -o ./AmlImg https://github.com/hzyitc/AmlImg/releases/download/$ver/AmlImg_${ver}_linux_amd64
           chmod +x ./AmlImg
 
-      # 步骤7：下载并解包U-Boot
+      # 步骤9：下载并解包U-Boot
       - name: Download and unpack the latest u-boot
         run: |
           echo "::group::Download"
@@ -323,7 +355,7 @@ jobs:
           ./AmlImg unpack ./uboot.img burn/
           echo "::endgroup::"
 
-      # 步骤8：提取boot和rootfs分区
+      # 步骤10：提取boot和rootfs分区
       - name: Extract boot and rootfs partitions
         run: |
           # 查找生成的镜像文件
@@ -339,7 +371,7 @@ jobs:
           # 修改权限
           sudo chown $(id -u):$(id -g) -R burn/
 
-      # 步骤9：生成Amlogic烧录镜像
+      # 步骤11：生成Amlogic烧录镜像
       - name: Generate burn image
         run: |
           # 生成分区校验文件
@@ -359,7 +391,7 @@ jobs:
           burnimg=${prefix}.burn.img
           ./AmlImg pack $burnimg burn/
 
-      # 步骤10：生成SHA256校验和并压缩镜像
+      # 步骤12：生成SHA256校验和并压缩镜像
       - name: Hash and compress images
         run: |
           for f in output/images/*.img; do
@@ -367,21 +399,21 @@ jobs:
             xz --threads=0 --compress "$f"     # 使用xz多线程压缩
           done
 
-      # 步骤11：上传镜像作为artifacts
+      # 步骤13：上传镜像作为artifacts
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.RELEASE }}-${{ matrix.BRANCH }}-${{ matrix.TYPE == 'desktop' && matrix.DESKTOP_ENVIRONMENT || matrix.TYPE }}
           path: output/images/*  # 上传所有镜像文件
 
-      # 步骤12：生成Release信息（SHA256校验和）
+      # 步骤14：生成Release信息（SHA256校验和）
       - name: Generate release informations
         run: |
           cat <<EOF | sed -E 's/^  //' | tee Release.md
             $(cat sha256sum | awk '{printf "%s: `%s`\n", $2, $1}')
           EOF
 
-      # 步骤13：上传镜像到GitHub Release
+      # 步骤15：上传镜像到GitHub Release
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
