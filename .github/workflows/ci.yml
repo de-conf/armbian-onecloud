@@ -389,4 +389,4 @@ jobs:
           append_body: true         # 追加到Release说明
           body_path: Release.md     # Release说明文件
           files: |
-            output/images/*         # 上传所有镜像文件
+            output/images/*         
