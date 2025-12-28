@@ -9,6 +9,9 @@
 !.github
 !.github/**
 
+# 忽略 ci-original.yml（备份文件）
+.github/workflows/ci-original.yml
+
 # 不忽略 patches 目录（RTL8851BU 驱动补丁）
 !patches
 !patches/**
