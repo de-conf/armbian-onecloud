@@ -688,42 +688,62 @@ STUB_EOF
           path: output/rtl8851bu/
 
       # 步骤8：构建完整系统镜像
+      # 只构建 trixie + minimal 版本
       - name: Build
+        env:
+          # 显式设置环境变量，确保传递给 compile.sh
+          BUILD_BRANCH: ${{ matrix.BRANCH }}
+          BUILD_RELEASE: ${{ matrix.RELEASE }}
+          BUILD_TYPE: ${{ matrix.TYPE }}
         run: |
           # 禁用远程缓存更新
           export GITHUB_ACTIONS=false
+          
+          echo "========================================"
+          echo ">>> Building Armbian Image"
+          echo ">>> RELEASE: ${BUILD_RELEASE}"
+          echo ">>> TYPE: ${BUILD_TYPE}"
+          echo ">>> BRANCH: ${BUILD_BRANCH}"
+          echo "========================================"
+          
           # 参数说明：
           # ALLOW_ROOT=yes - 允许root运行
           # BOARD=onecloud - 目标设备
-          # BRANCH - 内核分支
-          # RELEASE - Debian版本
+          # BRANCH - 内核分支 (current)
+          # RELEASE - Debian版本 (trixie)
           # KERNEL_CONFIGURE=no - 跳过内核配置（已编译）
-          # BUILD_MINIMAL - 是否构建最小化版本
-          # BUILD_DESKTOP - 是否构建桌面版本
-          # DESKTOP_ENVIRONMENT - 桌面环境类型
+          # BUILD_MINIMAL=yes - 构建最小化版本
+          # BUILD_DESKTOP=no - 不构建桌面版本
           # EXPERT=yes - 专家模式
           # SKIP_EXTERNAL_TOOLCHAINS=yes - 跳过外部工具链
           # CLEAN_LEVEL= - 清理级别（空=不清理）
           # USE_CCACHE=no - 不使用编译缓存
           # COMPRESS_OUTPUTIMAGE=img - 输出格式：img
-          sudo --preserve-env \
-            ./compile.sh build \
-              ALLOW_ROOT=yes \
-              BOARD=onecloud \
-              BRANCH=${{ matrix.BRANCH }} \
-              RELEASE=${{ matrix.RELEASE }} \
-              KERNEL_CONFIGURE=no \
-              BUILD_MINIMAL=${{ matrix.TYPE == 'minimal' && 'yes' || 'no' }} \
-              BUILD_DESKTOP=${{ matrix.TYPE == 'desktop' && 'yes' || 'no' }} \
-              DESKTOP_ENVIRONMENT=${{ matrix.DESKTOP_ENVIRONMENT }} \
-              DESKTOP_ENVIRONMENT_CONFIG_NAME=${{ matrix.DESKTOP_ENVIRONMENT_CONFIG_NAME }} \
-              DESKTOP_APPGROUPS_SELECTED=${{ matrix.DESKTOP_APPGROUPS_SELECTED }} \
-              EXPERT=yes \
-              SKIP_EXTERNAL_TOOLCHAINS=yes \
-              CLEAN_LEVEL= \
-              USE_CCACHE=no \
-              COMPRESS_OUTPUTIMAGE=img
+          
+          # 注意：直接在命令行传递参数，不依赖环境变量
+          sudo ./compile.sh build \
+            ALLOW_ROOT=yes \
+            BOARD=onecloud \
+            BRANCH="${BUILD_BRANCH}" \
+            RELEASE="${BUILD_RELEASE}" \
+            KERNEL_CONFIGURE=no \
+            BUILD_MINIMAL=yes \
+            BUILD_DESKTOP=no \
+            EXPERT=yes \
+            SKIP_EXTERNAL_TOOLCHAINS=yes \
+            CLEAN_LEVEL= \
+            USE_CCACHE=no \
+            COMPRESS_OUTPUTIMAGE=img
+          
           sudo chown $(id -u):$(id -g) -R output/
+          
+          # 验证只生成了一个镜像
+          echo "::group::Verify output images"
+          echo "Generated images:"
+          ls -la output/images/
+          IMG_COUNT=$(ls output/images/*.img 2>/dev/null | wc -l)
+          echo "Total image count: $IMG_COUNT"
+          echo "::endgroup::"
 
       # 步骤9：安装RTL8851BU WiFi驱动到镜像
       - name: Install RTL8851BU driver
