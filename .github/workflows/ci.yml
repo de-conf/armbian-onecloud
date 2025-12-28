@@ -6,6 +6,12 @@ name: CI
 
 on:
   workflow_dispatch:  # 支持手动触发
+    inputs:
+      confirm:
+        description: '确认开始构建 (Confirm to start build)'
+        required: true
+        default: 'yes'
+        type: string
   push:
     branches:
       - main  # 当main分支有推送时触发
