@@ -52,16 +52,20 @@ jobs:
         name: Get repositories information
         run: |
           # 获取当前workflow运行的创建时间
-          TIME="$(curl https://api.github.com/repos/${SCRIPT_REPO}/actions/runs/${GITHUB_RUN_ID} | jq -r .created_at)"
+          TIME="$(curl -s https://api.github.com/repos/${SCRIPT_REPO}/actions/runs/${GITHUB_RUN_ID} | jq -r .created_at)"
           # 生成基于时间的唯一标签，格式：ci-YYYYMMDD-HHMMSS-UTC
           TAG="ci-$(date -d "${TIME}" -u +'%Y%m%d-%H%M%S-%Z')"
 
           # 获取当前脚本仓库的commit SHA
-          SCRIPT_SHA=$(curl https://api.github.com/repos/${SCRIPT_REPO}/commits/${SCRIPT_REF} | jq -r .sha)
-          # 获取U-Boot仓库的release标签
-          UBOOT_TAG=$(curl https://api.github.com/repos/${UBOOT_REPO}/releases/${UBOOT_RELEASE} | jq -r .tag_name)
+          SCRIPT_SHA=$(curl -s https://api.github.com/repos/${SCRIPT_REPO}/commits/${SCRIPT_REF} | jq -r .sha)
+          # 获取U-Boot仓库的release标签（注意：latest需要使用特殊端点）
+          if [ "${UBOOT_RELEASE}" = "latest" ]; then
+            UBOOT_TAG=$(curl -s https://api.github.com/repos/${UBOOT_REPO}/releases/latest | jq -r .tag_name)
+          else
+            UBOOT_TAG=$(curl -s https://api.github.com/repos/${UBOOT_REPO}/releases/tags/${UBOOT_RELEASE} | jq -r .tag_name)
+          fi
           # 获取Armbian仓库的commit SHA
-          ARMBIAN_SHA=$(curl https://api.github.com/repos/${ARMBIAN_REPO}/commits/${ARMBIAN_REF} | jq -r .sha)
+          ARMBIAN_SHA=$(curl -s https://api.github.com/repos/${ARMBIAN_REPO}/commits/${ARMBIAN_REF} | jq -r .sha)
 
           cat <<EOF | sed -E 's/^  //' >>$GITHUB_ENV
             TIME=$TIME
