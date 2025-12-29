@@ -4,7 +4,7 @@
 
 # 忽略所有文件和目录
 *
-
+src/*
 # 不忽略 .github 目录
 !.github
 !.github/**

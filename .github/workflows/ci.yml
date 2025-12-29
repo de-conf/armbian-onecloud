@@ -211,18 +211,18 @@ jobs:
           echo "::group::Apply patches to RTL8851BU driver"
           cd rtl8851bu-src
           
-          # 应用 rtl8851bu-arm.patch (ARM 平台适配)
+          # 应用 rtl8851bu-arm.patch (ARM 平台适配 - Amlogic S805/S905)
           if [ -f "../script-patches/patches/rtl8851bu-arm.patch" ]; then
             echo "Applying rtl8851bu-arm.patch..."
             patch -p1 < ../script-patches/patches/rtl8851bu-arm.patch || {
               echo "Patch failed, trying manual modification..."
               sed -i 's/^CONFIG_PLATFORM_I386_PC = y/CONFIG_PLATFORM_I386_PC = n/' Makefile
-              sed -i 's/^CONFIG_PLATFORM_ARM_SUNxI = n/CONFIG_PLATFORM_ARM_SUNxI = y/' Makefile
+              sed -i 's/^CONFIG_PLATFORM_AML_S905 = n/CONFIG_PLATFORM_AML_S905 = y/' Makefile
             }
           else
             echo "rtl8851bu-arm.patch not found, using manual modification..."
             sed -i 's/^CONFIG_PLATFORM_I386_PC = y/CONFIG_PLATFORM_I386_PC = n/' Makefile
-            sed -i 's/^CONFIG_PLATFORM_ARM_SUNxI = n/CONFIG_PLATFORM_ARM_SUNxI = y/' Makefile
+            sed -i 's/^CONFIG_PLATFORM_AML_S905 = n/CONFIG_PLATFORM_AML_S905 = y/' Makefile
           fi
           
           # 应用 cfg80211.patch (cfg80211 兼容性修复)
