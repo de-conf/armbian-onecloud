@@ -793,7 +793,7 @@ jobs:
       # 步骤10：安装烧录镜像制作工具
       - name: Install Dependents
         run: |
-          sudo apt install img2simg  # Android sparse image工具
+          sudo apt install android-sdk-libsparse-utils  # Android sparse image工具
 
           # 下载Amlogic镜像打包工具
           ver="v0.3.1"
